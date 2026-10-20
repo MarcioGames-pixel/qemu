@@ -12,6 +12,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
+#include "exec/address-spaces.h"
 #include "qapi/error.h"
 #include "hw/arm/boot.h"
 #include "hw/core/boards.h"
