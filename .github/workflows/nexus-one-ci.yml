@@ -80,7 +80,10 @@ jobs:
           qpid=$!
           sleep 2
           sleep 1
-          qstate="$(ps -o stat= -p "$qpid" 2>/dev/null | tr -d ' ')"
+          # ps returns exit status 1 when QEMU has already exited.
+          # Do not let pipefail/set -e skip the diagnostic branch.
+          qstate="$(ps -o stat= -p "$qpid" 2>/dev/null || true)"
+          qstate="${qstate//[[:space:]]/}"
           if [ -z "$qstate" ] || [[ "$qstate" == Z* ]]; then
             echo 'QEMU exited during smoke test.'
             cat qemu-smoke.log
