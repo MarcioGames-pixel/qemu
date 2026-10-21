@@ -958,10 +958,17 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
         }
     } else if (kernel_size < 0) {
         /* 32-bit ARM */
-        entry = info->loader_start + KERNEL_LOAD_ADDR;
+        entry = info->kernel_load_addr ? info->kernel_load_addr :
+                info->loader_start + KERNEL_LOAD_ADDR;
+        if (entry < info->loader_start || entry >= ram_end) {
+            error_report("kernel load address 0x" HWADDR_FMT_plx
+                         " is outside RAM [0x" HWADDR_FMT_plx
+                         ", 0x" HWADDR_FMT_plx ")",
+                         entry, info->loader_start, ram_end);
+            exit(1);
+        }
         kernel_size = load_image_targphys_as(info->kernel_filename, entry,
-                                             ram_end - KERNEL_LOAD_ADDR, as,
-                                             NULL);
+                                             ram_end - entry, as, NULL);
         is_linux = 1;
         if (kernel_size >= 0) {
             image_low_addr = entry;
@@ -997,12 +1004,22 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
      * don't tell us their exact size (eg self-decompressing 32-bit kernels)
      * we might still make a bad choice here.
      */
-    info->initrd_start = info->loader_start +
-        MIN(info->ram_size / 2, 128 * MiB);
-    if (image_high_addr) {
-        info->initrd_start = MAX(info->initrd_start, image_high_addr);
+    if (info->initrd_load_addr) {
+        info->initrd_start = info->initrd_load_addr;
+        if (image_high_addr && info->initrd_start < image_high_addr) {
+            error_report("requested initrd address 0x" HWADDR_FMT_plx
+                         " overlaps the kernel image ending at 0x" HWADDR_FMT_plx,
+                         info->initrd_start, image_high_addr);
+            exit(1);
+        }
+    } else {
+        info->initrd_start = info->loader_start +
+            MIN(info->ram_size / 2, 128 * MiB);
+        if (image_high_addr) {
+            info->initrd_start = MAX(info->initrd_start, image_high_addr);
+        }
+        info->initrd_start = TARGET_PAGE_ALIGN(info->initrd_start);
     }
-    info->initrd_start = TARGET_PAGE_ALIGN(info->initrd_start);
 
     if (is_linux) {
         uint32_t fixupcontext[FIXUP_MAX];

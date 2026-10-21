@@ -40,6 +40,7 @@
 #include "target/arm/cpu-qom.h"
 
 #define NEXUS_ONE_RAM_BASE      0x20000000
+#define NEXUS_ONE_KERNEL_LOAD_ADDR 0x20008000
 #define NEXUS_ONE_MACHINE_ID    2304
 #define NEXUS_ONE_DEFAULT_RAM   (256 * MiB)
 
@@ -147,6 +148,9 @@ static void nexus_one_init(MachineState *machine)
     s->bootinfo.ram_size = machine->ram_size;
     s->bootinfo.board_id = NEXUS_ONE_MACHINE_ID;
     s->bootinfo.loader_start = NEXUS_ONE_RAM_BASE;
+    s->bootinfo.kernel_load_addr = NEXUS_ONE_KERNEL_LOAD_ADDR;
+    /* Original boot.img ramdisk address from the Nexus One header. */
+    s->bootinfo.initrd_load_addr = 0x21000000;
 
     /*
      * -kernel/-initrd/-append boot experiment. The kernel is expected to
