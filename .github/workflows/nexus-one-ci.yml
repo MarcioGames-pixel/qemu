@@ -79,7 +79,10 @@ jobs:
             >qemu-smoke.log 2>&1 &
           qpid=$!
           sleep 2
-          if ! kill -0 "$qpid" 2>/dev/null; then
+          sleep 1
+          qstate="$(ps -o stat= -p "$qpid" 2>/dev/null | tr -d ' ')"
+          if [ -z "$qstate" ] || [[ "$qstate" == Z* ]]; then
+            echo 'QEMU exited during smoke test.'
             cat qemu-smoke.log
             wait "$qpid" || true
             exit 1
