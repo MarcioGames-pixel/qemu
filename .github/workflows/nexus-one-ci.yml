@@ -99,7 +99,9 @@ jobs:
             -machine nexus-one -m 256M -S \
             -display none -monitor none -serial none \
             -vnc 127.0.0.1:1 -no-reboot >qemu-vnc.log 2>&1 &
-          echo $! > qemu-vnc.pid
+          qpid=$!
+          echo "$qpid" > qemu-vnc.pid
+          trap 'kill "$qpid" 2>/dev/null || true' EXIT
           for i in $(seq 1 20); do
             if nc -z 127.0.0.1 5901; then
               echo 'VNC server is listening on 127.0.0.1:5901.'
