@@ -22,6 +22,7 @@
 #include "target/arm/cpu-qom.h"
 
 #define NEXUS_ONE_RAM_BASE      0x20000000
+#define NEXUS_ONE_KERNEL_LOAD_ADDR 0x20008000
 #define NEXUS_ONE_MACHINE_ID    2304
 #define NEXUS_ONE_DEFAULT_RAM   (256 * MiB)
 
@@ -55,6 +56,7 @@ static void nexus_one_init(MachineState *machine)
     s->bootinfo.ram_size = machine->ram_size;
     s->bootinfo.board_id = NEXUS_ONE_MACHINE_ID;
     s->bootinfo.loader_start = NEXUS_ONE_RAM_BASE;
+    s->bootinfo.kernel_load_addr = NEXUS_ONE_KERNEL_LOAD_ADDR;
 
     /*
      * This enables a first boot experiment with -kernel/-initrd. Expect the
