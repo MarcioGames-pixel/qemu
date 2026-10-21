@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "qapi/error.h"
@@ -198,9 +199,6 @@ static uint64_t nexus_one_uart_read(void *opaque, hwaddr offset,
         return s->uart_imr;
     case MSM_UART_ISR:
         return s->uart_isr;
-    case MSM_UART_SR:
-        /* Transmitter is always ready; no receive FIFO is modelled. */
-        return MSM_UART_SR_TX_READY | MSM_UART_SR_TX_EMPTY;
     default:
         return 0;
     }
