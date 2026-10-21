@@ -84,6 +84,15 @@ jobs:
           if [ -z "$qstate" ] || [[ "$qstate" == Z* ]]; then
             echo 'QEMU exited during smoke test.'
             cat qemu-smoke.log
+            echo 'Capturing smoke-test crash backtrace with GDB.'
+            gdb -batch \
+              -ex run \
+              -ex 'thread apply all bt full' \
+              --args ./build/qemu-system-arm \
+                -machine nexus-one -m 256M -S \
+                -display none -monitor none -serial none -no-reboot \
+              >qemu-smoke-backtrace.log 2>&1 || true
+            cat qemu-smoke-backtrace.log
             wait "$qpid" || true
             exit 1
           fi
@@ -209,6 +218,7 @@ jobs:
           path: |
             machine-list.txt
             qemu-smoke.log
+            qemu-smoke-backtrace.log
             qemu-vnc.log
             qemu-vnc-backtrace.log
             bore.log
