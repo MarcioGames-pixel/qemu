@@ -15,6 +15,7 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "chardev/char-fe.h"
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "qapi/error.h"
@@ -30,6 +31,7 @@
 #define NEXUS_ONE_DEFAULT_RAM       (256 * MiB)
 
 /* QSD8x50 physical addresses from the legacy Linux msm_iomap-8x50.h. */
+#define QSD8X50_VIC_BASE             0xAC000000
 #define QSD8X50_CSR_BASE             0xAC100000
 #define QSD8X50_UART3_BASE           0xA9C00000
 #define QSD8X50_IO_SIZE              0x1000
@@ -62,6 +64,7 @@ typedef struct NexusOneMachineState {
     struct arm_boot_info bootinfo;
     MemoryRegion ram;
     MemoryRegion csr;
+    MemoryRegion vic;
     MemoryRegion uart3;
     CharFrontend uart_chr;
     bool uart_chr_connected;
@@ -80,10 +83,160 @@ typedef struct NexusOneMachineState {
     uint32_t dgt_enable;
     bool gpt_clear_on_match;
     bool dgt_clear_on_match;
+    uint32_t vic_select[2];
+    uint32_t vic_enable[2];
+    uint32_t vic_type[2];
+    uint32_t vic_polarity[2];
+    uint32_t vic_pending[2];
+    uint32_t vic_softint[2];
+    uint32_t vic_master;
+    uint32_t vic_config;
+    uint32_t vic_protection;
+    qemu_irq cpu_irq;
+    qemu_irq cpu_fiq;
+    QEMUTimer *gpt_timer;
+    QEMUTimer *dgt_timer;
 } NexusOneMachineState;
 
 #define TYPE_NEXUS_ONE_MACHINE MACHINE_TYPE_NAME("nexus-one")
 OBJECT_DECLARE_SIMPLE_TYPE(NexusOneMachineState, NEXUS_ONE_MACHINE)
+
+static void nexus_one_vic_update(NexusOneMachineState *s)
+{
+    uint32_t irq_pending =
+        (s->vic_pending[0] | s->vic_softint[0]) & s->vic_enable[0] &
+        ~s->vic_select[0];
+    uint32_t fiq_pending =
+        (s->vic_pending[0] | s->vic_softint[0]) & s->vic_enable[0] &
+        s->vic_select[0];
+    irq_pending |= (s->vic_pending[1] | s->vic_softint[1]) &
+                   s->vic_enable[1] & ~s->vic_select[1];
+    fiq_pending |= (s->vic_pending[1] | s->vic_softint[1]) &
+                   s->vic_enable[1] & s->vic_select[1];
+
+    if (s->cpu_irq) {
+        qemu_irq_set(s->cpu_irq, (s->vic_master & 1) && irq_pending);
+    }
+    if (s->cpu_fiq) {
+        qemu_irq_set(s->cpu_fiq, (s->vic_master & 2) && fiq_pending);
+    }
+}
+
+static void nexus_one_vic_raise(NexusOneMachineState *s, unsigned irq)
+{
+    if (irq < 64) {
+        s->vic_pending[irq / 32] |= 1U << (irq % 32);
+        nexus_one_vic_update(s);
+    }
+}
+
+static uint64_t nexus_one_vic_read(void *opaque, hwaddr offset,
+                                   unsigned size)
+{
+    NexusOneMachineState *s = opaque;
+
+    if (size != 4 || (offset & 3) || offset >= QSD8X50_IO_SIZE) {
+        return 0;
+    }
+    switch (offset) {
+    case 0x00: return s->vic_select[0];
+    case 0x04: return s->vic_select[1];
+    case 0x10: return s->vic_enable[0];
+    case 0x14: return s->vic_enable[1];
+    case 0x40: return s->vic_type[0];
+    case 0x44: return s->vic_type[1];
+    case 0x50: return s->vic_polarity[0];
+    case 0x54: return s->vic_polarity[1];
+    case 0x64: return s->vic_master;
+    case 0x68: return s->vic_config;
+    case 0x6c: return s->vic_protection;
+    case 0x80:
+        return (s->vic_pending[0] | s->vic_softint[0]) &
+               s->vic_enable[0] & ~s->vic_select[0];
+    case 0x84:
+        return (s->vic_pending[1] | s->vic_softint[1]) &
+               s->vic_enable[1] & ~s->vic_select[1];
+    case 0x90:
+        return (s->vic_pending[0] | s->vic_softint[0]) &
+               s->vic_enable[0] & s->vic_select[0];
+    case 0x94:
+        return (s->vic_pending[1] | s->vic_softint[1]) &
+               s->vic_enable[1] & s->vic_select[1];
+    case 0xa0: return s->vic_pending[0] | s->vic_softint[0];
+    case 0xa4: return s->vic_pending[1] | s->vic_softint[1];
+    case 0xc0: return s->vic_softint[0];
+    case 0xc4: return s->vic_softint[1];
+    default: return 0;
+    }
+}
+
+static void nexus_one_vic_write(void *opaque, hwaddr offset, uint64_t value,
+                                unsigned size)
+{
+    NexusOneMachineState *s = opaque;
+    unsigned bank = (offset & 4) ? 1 : 0;
+
+    if (size != 4 || (offset & 3) || offset >= QSD8X50_IO_SIZE) {
+        return;
+    }
+    switch (offset) {
+    case 0x00:
+    case 0x04:
+        s->vic_select[bank] = value;
+        break;
+    case 0x20:
+    case 0x24:
+        s->vic_enable[bank] &= ~value;
+        break;
+    case 0x30:
+    case 0x34:
+        s->vic_enable[bank] |= value;
+        break;
+    case 0x40:
+    case 0x44:
+        s->vic_type[bank] = value;
+        break;
+    case 0x50:
+    case 0x54:
+        s->vic_polarity[bank] = value;
+        break;
+    case 0x64:
+        s->vic_master = value & 3;
+        break;
+    case 0x68:
+        s->vic_config = value;
+        break;
+    case 0x6c:
+        s->vic_protection = value;
+        break;
+    case 0xb0:
+    case 0xb4:
+        s->vic_pending[bank] &= ~value;
+        break;
+    case 0xc0:
+    case 0xc4:
+        s->vic_softint[bank] |= value;
+        break;
+    case 0xd0:
+    case 0xd4:
+        s->vic_softint[bank] &= ~value;
+        break;
+    default:
+        break;
+    }
+    nexus_one_vic_update(s);
+}
+
+static const MemoryRegionOps nexus_one_vic_ops = {
+    .read = nexus_one_vic_read,
+    .write = nexus_one_vic_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+};
 
 static uint32_t nexus_one_timer_count(uint64_t epoch_ns, uint64_t hz)
 {
@@ -91,6 +244,48 @@ static uint32_t nexus_one_timer_count(uint64_t epoch_ns, uint64_t hz)
     uint64_t elapsed_ns = now_ns >= epoch_ns ? now_ns - epoch_ns : 0;
 
     return (uint32_t)(elapsed_ns * hz / NANOSECONDS_PER_SECOND);
+}
+
+static void nexus_one_schedule_timer(NexusOneMachineState *s, bool dgt)
+{
+    uint32_t enable = dgt ? s->dgt_enable : s->gpt_enable;
+    uint32_t match = dgt ? s->dgt_match : s->gpt_match;
+    uint32_t count = nexus_one_timer_count(
+        dgt ? s->dgt_epoch_ns : s->gpt_epoch_ns,
+        dgt ? QSD8X50_DGT_HZ : QSD8X50_GPT_HZ);
+    uint32_t ticks = match - count;
+    uint64_t hz = dgt ? QSD8X50_DGT_HZ : QSD8X50_GPT_HZ;
+    QEMUTimer *timer = dgt ? s->dgt_timer : s->gpt_timer;
+    int64_t delta_ns;
+
+    if (!timer || !(enable & 1)) {
+        if (timer) {
+            timer_del(timer);
+        }
+        return;
+    }
+    if (!ticks) {
+        ticks = 1;
+    }
+    delta_ns = (int64_t)((uint64_t)ticks * NANOSECONDS_PER_SECOND / hz);
+    if (delta_ns < 1) {
+        delta_ns = 1;
+    }
+    timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delta_ns);
+}
+
+static void nexus_one_gpt_expire(void *opaque)
+{
+    NexusOneMachineState *s = opaque;
+    s->gpt_enable &= ~1U;
+    nexus_one_vic_raise(s, 7);
+}
+
+static void nexus_one_dgt_expire(void *opaque)
+{
+    NexusOneMachineState *s = opaque;
+    s->dgt_enable &= ~1U;
+    nexus_one_vic_raise(s, 8);
 }
 
 static uint64_t nexus_one_csr_read(void *opaque, hwaddr offset, unsigned size)
@@ -138,6 +333,7 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
     switch (offset) {
     case QSD8X50_TIMER_MATCH:
         s->gpt_match = value;
+        nexus_one_schedule_timer(s, false);
         break;
     case QSD8X50_TIMER_COUNT:
         /* Writes to COUNT are ignored by the physical counter. */
@@ -145,21 +341,26 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
     case QSD8X50_TIMER_ENABLE:
         s->gpt_enable = value & 3;
         s->gpt_clear_on_match = (value & 2) != 0;
+        nexus_one_schedule_timer(s, false);
         break;
     case QSD8X50_TIMER_CLEAR:
         s->gpt_epoch_ns = now_ns;
+        nexus_one_schedule_timer(s, false);
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_MATCH:
         s->dgt_match = value;
+        nexus_one_schedule_timer(s, true);
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_COUNT:
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_ENABLE:
         s->dgt_enable = value & 3;
         s->dgt_clear_on_match = (value & 2) != 0;
+        nexus_one_schedule_timer(s, true);
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_CLEAR:
         s->dgt_epoch_ns = now_ns;
+        nexus_one_schedule_timer(s, true);
         break;
     case QSD8X50_TIMER_PROTECTION:
         s->csr_regs[index] = value;
@@ -290,6 +491,10 @@ static void nexus_one_init(MachineState *machine)
                            machine->ram_size, &error_fatal);
     memory_region_add_subregion(sysmem, NEXUS_ONE_RAM_BASE, &s->ram);
 
+    memory_region_init_io(&s->vic, NULL, &nexus_one_vic_ops, s,
+                          "nexus-one.qsd8x50-vic", QSD8X50_IO_SIZE);
+    memory_region_add_subregion(sysmem, QSD8X50_VIC_BASE, &s->vic);
+
     memory_region_init_io(&s->csr, NULL, &nexus_one_csr_ops, s,
                           "nexus-one.qsd8x50-csr", QSD8X50_IO_SIZE);
     memory_region_add_subregion(sysmem, QSD8X50_CSR_BASE, &s->csr);
@@ -312,6 +517,12 @@ static void nexus_one_init(MachineState *machine)
     }
     qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
     cpu = ARM_CPU(cpuobj);
+    s->cpu_irq = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_IRQ);
+    s->cpu_fiq = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_FIQ);
+    s->gpt_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, nexus_one_gpt_expire, s);
+    s->dgt_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, nexus_one_dgt_expire, s);
+    s->gpt_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->dgt_epoch_ns = s->gpt_epoch_ns;
 
     s->bootinfo.ram_size = machine->ram_size;
     s->bootinfo.board_id = NEXUS_ONE_MACHINE_ID;
