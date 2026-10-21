@@ -57,6 +57,8 @@ static void nexus_one_init(MachineState *machine)
     s->bootinfo.board_id = NEXUS_ONE_MACHINE_ID;
     s->bootinfo.loader_start = NEXUS_ONE_RAM_BASE;
     s->bootinfo.kernel_load_addr = NEXUS_ONE_KERNEL_LOAD_ADDR;
+    /* Original boot.img ramdisk address from the Nexus One header. */
+    s->bootinfo.initrd_load_addr = 0x21000000;
 
     /*
      * This enables a first boot experiment with -kernel/-initrd. Expect the
