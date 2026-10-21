@@ -29,6 +29,7 @@
 typedef struct NexusOneMachineState {
     MachineState parent;
     struct arm_boot_info bootinfo;
+    MemoryRegion ram;
 } NexusOneMachineState;
 
 #define TYPE_NEXUS_ONE_MACHINE MACHINE_TYPE_NAME("nexus-one")
@@ -46,7 +47,9 @@ static void nexus_one_init(MachineState *machine)
      * 0x20000000. This RAM mapping is grounded in the legacy QSD8K kernel
      * support; no Qualcomm-specific peripherals are claimed here.
      */
-    memory_region_add_subregion(sysmem, NEXUS_ONE_RAM_BASE, machine->ram);
+    memory_region_init_ram(&s->ram, OBJECT(machine), "nexus-one.ram",
+                           machine->ram_size, &error_fatal);
+    memory_region_add_subregion(sysmem, NEXUS_ONE_RAM_BASE, &s->ram);
 
     if (object_property_find(cpuobj, "has_el3")) {
         object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
