@@ -39,8 +39,25 @@ static void nexus_one_init(MachineState *machine)
 {
     NexusOneMachineState *s = NEXUS_ONE_MACHINE(machine);
     MemoryRegion *sysmem = get_system_memory();
-    Object *cpuobj = object_new(machine->cpu_type);
-    ARMCPU *cpu = ARM_CPU(cpuobj);
+    Object *cpuobj;
+    ARMCPU *cpu;
+
+    /*
+     * Match the creation/realization order used by established ARM boards.
+     * Validate the QOM type before DEVICE() to avoid an opaque assertion.
+     */
+    if (!machine->cpu_type) {
+        error_report("nexus-one: machine CPU type is not configured");
+        exit(1);
+    }
+    cpuobj = object_new(machine->cpu_type);
+    if (!object_dynamic_cast(cpuobj, TYPE_DEVICE)) {
+        error_report("nexus-one: CPU type '%s' created QOM object '%s', "
+                     "which is not a Device",
+                     machine->cpu_type, object_get_typename(cpuobj));
+        object_unref(cpuobj);
+        exit(1);
+    }
 
     /*
      * The original Nexus One kernel expects physical RAM to start at
@@ -55,6 +72,7 @@ static void nexus_one_init(MachineState *machine)
         object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
     }
     qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
+    cpu = ARM_CPU(cpuobj);
 
     s->bootinfo.ram_size = machine->ram_size;
     s->bootinfo.board_id = NEXUS_ONE_MACHINE_ID;
