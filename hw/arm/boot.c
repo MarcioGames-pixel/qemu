@@ -958,10 +958,17 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
         }
     } else if (kernel_size < 0) {
         /* 32-bit ARM */
-        entry = info->loader_start + KERNEL_LOAD_ADDR;
+        entry = info->kernel_load_addr ? info->kernel_load_addr :
+                info->loader_start + KERNEL_LOAD_ADDR;
+        if (entry < info->loader_start || entry >= ram_end) {
+            error_report("kernel load address 0x" HWADDR_FMT_plx
+                         " is outside RAM [0x" HWADDR_FMT_plx
+                         ", 0x" HWADDR_FMT_plx ")",
+                         entry, info->loader_start, ram_end);
+            exit(1);
+        }
         kernel_size = load_image_targphys_as(info->kernel_filename, entry,
-                                             ram_end - KERNEL_LOAD_ADDR, as,
-                                             NULL);
+                                             ram_end - entry, as, NULL);
         is_linux = 1;
         if (kernel_size >= 0) {
             image_low_addr = entry;
