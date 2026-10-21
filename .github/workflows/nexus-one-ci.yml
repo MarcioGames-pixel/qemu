@@ -31,6 +31,8 @@ jobs:
   build-test-vnc:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    env:
+      VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -89,7 +91,7 @@ jobs:
           echo 'Machine created and stayed running during smoke test.'
 
       - name: Start local VNC and verify TCP port
-        if: ${{ github.event_name != 'workflow_dispatch' || secrets.VNC_PASSWORD == '' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || env.VNC_PASSWORD == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -108,24 +110,33 @@ jobs:
           cat qemu-vnc.log
           exit 1
 
-      - name: Start password-protected VNC for Bore
-        if: ${{ github.event_name == 'workflow_dispatch' && secrets.VNC_PASSWORD != '' }}
+      - name: Start password-protected VNC and Bore tunnel
+        if: ${{ github.event_name == 'workflow_dispatch' && env.VNC_PASSWORD != '' }}
         env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          TUNNEL_MINUTES: ${{ inputs.tunnel_minutes || '20' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${#VNC_PASSWORD}" -lt 8 ] || [ "${#VNC_PASSWORD}" -gt 8 ]; then
+          if [ "${#VNC_PASSWORD}" -ne 8 ]; then
             echo 'VNC_PASSWORD must be exactly 8 characters (QEMU VNC password limit).'
             exit 1
           fi
           echo "::add-mask::$VNC_PASSWORD"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install bore-cli --locked
           ./build/qemu-system-arm \
             -machine nexus-one -m 256M -S \
             -display none -serial none \
             -monitor unix:/tmp/nexus-vnc-monitor.sock,server=on,wait=off \
             -vnc 127.0.0.1:1,password=on -no-reboot >qemu-vnc.log 2>&1 &
-          echo $! > qemu-vnc.pid
+          qpid=$!
+          echo "$qpid" > qemu-vnc.pid
+          cleanup() {
+            kill "$qpid" 2>/dev/null || true
+            if [ -n "${bore_pid:-}" ]; then kill "$bore_pid" 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
           python3 - <<'PY'
           import os, socket, time
           path = "/tmp/nexus-vnc-monitor.sock"
@@ -148,47 +159,25 @@ jobs:
           s.close()
           PY
           for i in $(seq 1 20); do
-            if nc -z 127.0.0.1 5901; then
-              echo 'Password-protected VNC is listening on 127.0.0.1:5901.'
-              exit 0
-            fi
+            if nc -z 127.0.0.1 5901; then break; fi
             sleep 1
           done
-          cat qemu-vnc.log
-          exit 1
-
-      - name: Open temporary Bore tunnel to VNC
-        if: ${{ github.event_name == 'workflow_dispatch' && secrets.VNC_PASSWORD != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v cargo >/dev/null 2>&1; then
-            echo 'Rust/Cargo is not available on this runner.'
-            exit 1
-          fi
-          cargo install bore-cli --locked
-          echo 'Starting temporary public TCP tunnel to the password-protected VNC port.'
-          timeout 40m "$HOME/.cargo/bin/bore" local 5901 --to bore.pub 2>&1 | tee bore.log &
-          echo $! > bore.pid
-          for i in $(seq 1 20); do
-            if grep -E 'bore\.pub:[0-9]+' bore.log; then
-              break
-            fi
+          nc -z 127.0.0.1 5901 || { cat qemu-vnc.log; exit 1; }
+          echo 'VNC is listening locally; starting the temporary Bore tunnel.'
+          timeout 40m "$HOME/.cargo/bin/bore" local 5901 --to bore.pub >bore.log 2>&1 &
+          bore_pid=$!
+          echo "$bore_pid" > bore.pid
+          for i in $(seq 1 30); do
+            if grep -E 'bore\.pub:[0-9]+' bore.log; then break; fi
+            if ! kill -0 "$bore_pid" 2>/dev/null; then cat bore.log; exit 1; fi
             sleep 1
           done
           if ! grep -E 'bore\.pub:[0-9]+' bore.log; then
             cat bore.log
             exit 1
           fi
-          echo 'The tunnel is temporary and will close when this workflow ends.'
-
-      - name: Keep VNC/Bore session alive
-        if: ${{ github.event_name == 'workflow_dispatch' && secrets.VNC_PASSWORD != '' }}
-        env:
-          TUNNEL_MINUTES: ${{ inputs.tunnel_minutes || '20' }}
-        run: |
-          echo "VNC/Bore session will stay up for $TUNNEL_MINUTES minutes."
-          echo "Use the bore.pub:PORT shown in the preceding step and the VNC_PASSWORD repository secret."
+          echo 'Connect a VNC client to the bore.pub:PORT printed above; use the VNC_PASSWORD repository secret.'
+          echo "Tunnel will remain active for $TUNNEL_MINUTES minutes."
           sleep "$((TUNNEL_MINUTES * 60))"
 
       - name: Upload diagnostics
