@@ -43,7 +43,7 @@
 #define MSM_UART_SR_TX_READY         (1U << 2)
 #define MSM_UART_SR_TX_EMPTY         (1U << 3)
 
-/* QSD8x50 GPT runs at 32.768 kHz; the debug timer runs at 19.2 MHz\n * and the legacy kernel reads it shifted right by five bits. */
+/* QSD8x50 GPT runs at 32.768 kHz; DGT runs at 19.2 MHz. */
 #define QSD8X50_GPT_HZ               32768ULL
 #define QSD8X50_DGT_HZ               19200000ULL
 #define QSD8X50_DGT_SHIFT            5
@@ -140,9 +140,6 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
     case QSD8X50_TIMER_ENABLE:
         s->gpt_enable = value & 3;
         s->gpt_clear_on_match = (value & 2) != 0;
-        if (value & 1) {
-            s->gpt_epoch_ns = now_ns;
-        }
         break;
     case QSD8X50_TIMER_CLEAR:
         s->gpt_epoch_ns = now_ns;
@@ -155,9 +152,6 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_ENABLE:
         s->dgt_enable = value & 3;
         s->dgt_clear_on_match = (value & 2) != 0;
-        if (value & 1) {
-            s->dgt_epoch_ns = now_ns;
-        }
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_CLEAR:
         s->dgt_epoch_ns = now_ns;
