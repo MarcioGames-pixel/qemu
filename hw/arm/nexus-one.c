@@ -14,6 +14,7 @@
 #include "qemu/units.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+#include "chardev/char-fe.h"
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "qapi/error.h"
@@ -62,6 +63,8 @@ typedef struct NexusOneMachineState {
     MemoryRegion ram;
     MemoryRegion csr;
     MemoryRegion uart3;
+    CharFrontend uart_chr;
+    bool uart_chr_connected;
     uint32_t uart_mr1;
     uint32_t uart_mr2;
     uint32_t uart_csr;
@@ -234,17 +237,18 @@ static void nexus_one_uart_write(void *opaque, hwaddr offset, uint64_t value,
         s->uart_isr &= ~value;
         break;
     case MSM_UART_TF:
-        /*
-         * Until a QEMU CharBackend is wired up, make transmitted debug
-         * characters visible when guest-error logging is enabled.
-         */
-        if ((value & 0xff) == '\n' || (value & 0xff) == '\r' ||
-            (value & 0xff) == '\t' ||
-            ((value & 0xff) >= 0x20 && (value & 0xff) <= 0x7e)) {
-            qemu_log_mask(LOG_GUEST_ERROR, "nexus-one uart3: %c",
-                          (char)(value & 0xff));
+        {
+            uint8_t byte = value & 0xff;
+
+            if (s->uart_chr_connected) {
+                qemu_chr_fe_write_all(&s->uart_chr, &byte, 1);
+            } else if (byte == '\n' || byte == '\r' || byte == '\t' ||
+                       (byte >= 0x20 && byte <= 0x7e)) {
+                qemu_log_mask(LOG_GUEST_ERROR, "nexus-one uart3: %c",
+                              (char)byte);
+            }
+            s->uart_tx_count++;
         }
-        s->uart_tx_count++;
         break;
     default:
         break;
@@ -293,6 +297,15 @@ static void nexus_one_init(MachineState *machine)
     memory_region_init_io(&s->uart3, NULL, &nexus_one_uart_ops, s,
                           "nexus-one.msm-uart3", QSD8X50_IO_SIZE);
     memory_region_add_subregion(sysmem, QSD8X50_UART3_BASE, &s->uart3);
+    /*
+     * Route the emulated MSM UART to QEMU's first serial backend when the
+     * user supplies -serial stdio, -serial file:..., etc. With -serial none,
+     * retain guest-error logging as a diagnostic fallback.
+     */
+    if (serial_hd(0)) {
+        qemu_chr_fe_init(&s->uart_chr, serial_hd(0), &error_fatal);
+        s->uart_chr_connected = true;
+    }
 
     if (object_property_find(cpuobj, "has_el3")) {
         object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
