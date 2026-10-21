@@ -71,7 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          timeout 8s ./build/qemu-system-arm \
+          ./build/qemu-system-arm \
             -machine nexus-one -m 256M -S \
             -display none -monitor none -serial none -no-reboot \
             >qemu-smoke.log 2>&1 &
