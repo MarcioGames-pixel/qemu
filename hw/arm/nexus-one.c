@@ -43,8 +43,16 @@
 #define MSM_UART_SR_TX_READY         (1U << 2)
 #define MSM_UART_SR_TX_EMPTY         (1U << 3)
 
-/* QSD8x50 CSR timer runs from 19.2 MHz / 4 = 4.8 MHz. */
-#define QSD8X50_TIMER_HZ             4800000ULL
+/* QSD8x50 GPT runs at 32.768 kHz; the debug timer runs at 19.2 MHz\n * and the legacy kernel reads it shifted right by five bits. */
+#define QSD8X50_GPT_HZ               32768ULL
+#define QSD8X50_DGT_HZ               19200000ULL
+#define QSD8X50_DGT_SHIFT            5
+#define QSD8X50_TIMER_MATCH          0x00
+#define QSD8X50_TIMER_COUNT          0x04
+#define QSD8X50_TIMER_ENABLE         0x08
+#define QSD8X50_TIMER_CLEAR          0x0c
+#define QSD8X50_DGT_BASE             0x10
+#define QSD8X50_TIMER_PROTECTION     0x20
 
 typedef struct NexusOneMachineState {
     MachineState parent;
@@ -58,11 +66,27 @@ typedef struct NexusOneMachineState {
     uint32_t uart_imr;
     uint32_t uart_isr;
     uint32_t uart_tx_count;
-    uint32_t csr_regs[16];
+    uint32_t csr_regs[QSD8X50_IO_SIZE / sizeof(uint32_t)];
+    uint64_t gpt_epoch_ns;
+    uint64_t dgt_epoch_ns;
+    uint32_t gpt_match;
+    uint32_t dgt_match;
+    uint32_t gpt_enable;
+    uint32_t dgt_enable;
+    bool gpt_clear_on_match;
+    bool dgt_clear_on_match;
 } NexusOneMachineState;
 
 #define TYPE_NEXUS_ONE_MACHINE MACHINE_TYPE_NAME("nexus-one")
 OBJECT_DECLARE_SIMPLE_TYPE(NexusOneMachineState, NEXUS_ONE_MACHINE)
+
+static uint32_t nexus_one_timer_count(uint64_t epoch_ns, uint64_t hz)
+{
+    uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t elapsed_ns = now_ns >= epoch_ns ? now_ns - epoch_ns : 0;
+
+    return (uint32_t)(elapsed_ns * hz / NANOSECONDS_PER_SECOND);
+}
 
 static uint64_t nexus_one_csr_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -73,15 +97,24 @@ static uint64_t nexus_one_csr_read(void *opaque, hwaddr offset, unsigned size)
         return 0;
     }
 
-    /*
-     * QSD8x50 exposes its global timer at CSR + 0x10. Returning a monotonic
-     * virtual-clock-derived 32-bit counter is enough for basic polling;
-     * timer compare/IRQ delivery is not implemented yet.
-     */
-    if (offset == 0x10) {
-        uint64_t ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        return (ns * QSD8X50_TIMER_HZ / NANOSECONDS_PER_SECOND) &
-               UINT32_MAX;
+    /* The MSM GPT occupies CSR + 0x00; the debug timer occupies + 0x10. */
+    if (offset == QSD8X50_TIMER_COUNT) {
+        return nexus_one_timer_count(s->gpt_epoch_ns, QSD8X50_GPT_HZ);
+    }
+    if (offset == QSD8X50_TIMER_ENABLE) {
+        return s->gpt_enable;
+    }
+    if (offset == QSD8X50_DGT_BASE + QSD8X50_TIMER_COUNT) {
+        return nexus_one_timer_count(s->dgt_epoch_ns, QSD8X50_DGT_HZ);
+    }
+    if (offset == QSD8X50_DGT_BASE + QSD8X50_TIMER_ENABLE) {
+        return s->dgt_enable;
+    }
+    if (offset == QSD8X50_TIMER_MATCH) {
+        return s->gpt_match;
+    }
+    if (offset == QSD8X50_DGT_BASE + QSD8X50_TIMER_MATCH) {
+        return s->dgt_match;
     }
     return s->csr_regs[index];
 }
@@ -91,12 +124,51 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
 {
     NexusOneMachineState *s = opaque;
     uint32_t index = offset >> 2;
+    uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    if (size != 4 || (offset & 3) || offset >= QSD8X50_IO_SIZE ||
-        offset == 0x10) {
+    if (size != 4 || (offset & 3) || offset >= QSD8X50_IO_SIZE) {
         return;
     }
-    s->csr_regs[index] = value;
+
+    switch (offset) {
+    case QSD8X50_TIMER_MATCH:
+        s->gpt_match = value;
+        break;
+    case QSD8X50_TIMER_COUNT:
+        /* Writes to COUNT are ignored by the physical counter. */
+        break;
+    case QSD8X50_TIMER_ENABLE:
+        s->gpt_enable = value & 3;
+        s->gpt_clear_on_match = (value & 2) != 0;
+        if (value & 1) {
+            s->gpt_epoch_ns = now_ns;
+        }
+        break;
+    case QSD8X50_TIMER_CLEAR:
+        s->gpt_epoch_ns = now_ns;
+        break;
+    case QSD8X50_DGT_BASE + QSD8X50_TIMER_MATCH:
+        s->dgt_match = value;
+        break;
+    case QSD8X50_DGT_BASE + QSD8X50_TIMER_COUNT:
+        break;
+    case QSD8X50_DGT_BASE + QSD8X50_TIMER_ENABLE:
+        s->dgt_enable = value & 3;
+        s->dgt_clear_on_match = (value & 2) != 0;
+        if (value & 1) {
+            s->dgt_epoch_ns = now_ns;
+        }
+        break;
+    case QSD8X50_DGT_BASE + QSD8X50_TIMER_CLEAR:
+        s->dgt_epoch_ns = now_ns;
+        break;
+    case QSD8X50_TIMER_PROTECTION:
+        s->csr_regs[index] = value;
+        break;
+    default:
+        s->csr_regs[index] = value;
+        break;
+    }
 }
 
 static const MemoryRegionOps nexus_one_csr_ops = {
