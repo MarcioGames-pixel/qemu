@@ -64,7 +64,12 @@ static void nexus_one_init(MachineState *machine)
      * 0x20000000. This RAM mapping is grounded in the legacy QSD8K kernel
      * support; no Qualcomm-specific peripherals are claimed here.
      */
-    memory_region_init_ram(&s->ram, OBJECT(machine), "nexus-one.ram",
+    /*
+     * RAM regions are not owned by the MachineState QOM object: this QEMU
+     * tree's RAM registration path expects a Device owner when non-NULL.
+     * Use NULL, as other ARM machine models do for board RAM.
+     */
+    memory_region_init_ram(&s->ram, NULL, "nexus-one.ram",
                            machine->ram_size, &error_fatal);
     memory_region_add_subregion(sysmem, NEXUS_ONE_RAM_BASE, &s->ram);
 
