@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential git python3 python3-pip pkg-config \
+            build-essential git gdb python3 python3-pip pkg-config \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
             libcapstone-dev liburing-dev libaio-dev libusb-1.0-0-dev \
             libnuma-dev libcurl4-gnutls-dev libgnutls28-dev \
@@ -108,6 +108,20 @@ jobs:
             if nc -z 127.0.0.1 5901; then
               echo 'VNC server is listening on 127.0.0.1:5901.'
               exit 0
+            fi
+            if ! kill -0 "$qpid" 2>/dev/null; then
+              echo 'QEMU exited before VNC became available; capturing its crash backtrace.'
+              cat qemu-vnc.log || true
+              gdb -batch \
+                -ex run \
+                -ex 'thread apply all bt full' \
+                --args ./build/qemu-system-arm \
+                  -machine nexus-one -m 256M -S \
+                  -display none -monitor none -serial none \
+                  -vnc 127.0.0.1:1 -no-reboot \
+                >qemu-vnc-backtrace.log 2>&1 || true
+              cat qemu-vnc-backtrace.log
+              exit 1
             fi
             sleep 1
           done
@@ -193,6 +207,7 @@ jobs:
             machine-list.txt
             qemu-smoke.log
             qemu-vnc.log
+            qemu-vnc-backtrace.log
             bore.log
           if-no-files-found: ignore
           retention-days: 7
