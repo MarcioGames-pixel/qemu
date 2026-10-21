@@ -36,9 +36,10 @@
 #define MSM_UART_MR1                 0x00
 #define MSM_UART_MR2                 0x04
 #define MSM_UART_CSR                 0x08
-#define MSM_UART_IMR                 0x10
+#define MSM_UART_CR                  0x10
+#define MSM_UART_IMR                 0x14
 #define MSM_UART_ISR                 0x14
-#define MSM_UART_TF                  0x70
+#define MSM_UART_TF                  0x0c
 #define MSM_UART_SR                  0x08
 #define MSM_UART_SR_TX_READY         (1U << 2)
 #define MSM_UART_SR_TX_EMPTY         (1U << 3)
@@ -191,7 +192,8 @@ static uint64_t nexus_one_uart_read(void *opaque, hwaddr offset,
     case MSM_UART_MR2:
         return s->uart_mr2;
     case MSM_UART_CSR:
-        return s->uart_csr;
+        /* SR is read at the CSR offset; CSR is write-only. */
+        return MSM_UART_SR_TX_READY | MSM_UART_SR_TX_EMPTY;
     case MSM_UART_IMR:
         return s->uart_imr;
     case MSM_UART_ISR:
@@ -223,6 +225,9 @@ static void nexus_one_uart_write(void *opaque, hwaddr offset, uint64_t value,
     case MSM_UART_CSR:
         s->uart_csr = value;
         break;
+    case MSM_UART_CR:
+        /* Reset/enable commands are accepted; TX/RX remain polling-ready. */
+        break;
     case MSM_UART_IMR:
         s->uart_imr = value;
         break;
@@ -233,8 +238,7 @@ static void nexus_one_uart_write(void *opaque, hwaddr offset, uint64_t value,
     case MSM_UART_TF:
         /*
          * Until a QEMU CharBackend is wired up, make transmitted debug
-         * characters visible in the emulator log. Limit output to printable
-         * bytes and newline/tab so random register writes do not spam logs.
+         * characters visible when guest-error logging is enabled.
          */
         if ((value & 0xff) == '\n' || (value & 0xff) == '\r' ||
             (value & 0xff) == '\t' ||
