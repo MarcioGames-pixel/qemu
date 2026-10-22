@@ -143,10 +143,15 @@ static uint64_t nexus_one_vic_read(void *opaque, hwaddr offset,
     case 0x04: return s->vic_select[1];
     case 0x10: return s->vic_enable[0];
     case 0x14: return s->vic_enable[1];
+    case 0x20: return s->vic_enable[0];
+    case 0x24: return s->vic_enable[1];
+    case 0x30: return s->vic_enable[0];
+    case 0x34: return s->vic_enable[1];
     case 0x40: return s->vic_type[0];
     case 0x44: return s->vic_type[1];
     case 0x50: return s->vic_polarity[0];
     case 0x54: return s->vic_polarity[1];
+    case 0x60: return 0xffffffffU; /* VIC_NO_PEND_VAL */
     case 0x64: return s->vic_master;
     case 0x68: return s->vic_config;
     case 0x6c: return s->vic_protection;
@@ -166,6 +171,16 @@ static uint64_t nexus_one_vic_read(void *opaque, hwaddr offset,
     case 0xa4: return s->vic_pending[1] | s->vic_softint[1];
     case 0xc0: return s->vic_softint[0];
     case 0xc4: return s->vic_softint[1];
+    case 0xd0: {
+        uint32_t pending = ((s->vic_pending[0] | s->vic_softint[0]) &
+                            s->vic_enable[0] & ~s->vic_select[0]) |
+                           (((s->vic_pending[1] | s->vic_softint[1]) &
+                             s->vic_enable[1] & ~s->vic_select[1]) << 0);
+        if (pending) {
+            return __builtin_ctz(pending);
+        }
+        return 0xffffffffU;
+    }
     default: return 0;
     }
 }
@@ -215,11 +230,7 @@ static void nexus_one_vic_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case 0xc0:
     case 0xc4:
-        s->vic_softint[bank] |= value;
-        break;
-    case 0xd0:
-    case 0xd4:
-        s->vic_softint[bank] &= ~value;
+        s->vic_softint[bank] = value;
         break;
     default:
         break;
@@ -264,7 +275,7 @@ static void nexus_one_schedule_timer(NexusOneMachineState *s, bool dgt)
         }
         return;
     }
-    if (!ticks) {
+    if (!ticks || ticks > 0x7fffffffU) {
         ticks = 1;
     }
     delta_ns = (int64_t)((uint64_t)ticks * NANOSECONDS_PER_SECOND / hz);
@@ -277,14 +288,16 @@ static void nexus_one_schedule_timer(NexusOneMachineState *s, bool dgt)
 static void nexus_one_gpt_expire(void *opaque)
 {
     NexusOneMachineState *s = opaque;
-    s->gpt_enable &= ~1U;
+
+    /* QSD8x50 INT_GP_TIMER_EXP; the guest acknowledges through VIC. */
     nexus_one_vic_raise(s, 7);
 }
 
 static void nexus_one_dgt_expire(void *opaque)
 {
     NexusOneMachineState *s = opaque;
-    s->dgt_enable &= ~1U;
+
+    /* QSD8x50 INT_DEBUG_TIMER_EXP; the guest acknowledges through VIC. */
     nexus_one_vic_raise(s, 8);
 }
 
@@ -344,8 +357,7 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
         nexus_one_schedule_timer(s, false);
         break;
     case QSD8X50_TIMER_CLEAR:
-        s->gpt_epoch_ns = now_ns;
-        nexus_one_schedule_timer(s, false);
+        timer_del(s->gpt_timer);
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_MATCH:
         s->dgt_match = value;
@@ -359,8 +371,7 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
         nexus_one_schedule_timer(s, true);
         break;
     case QSD8X50_DGT_BASE + QSD8X50_TIMER_CLEAR:
-        s->dgt_epoch_ns = now_ns;
-        nexus_one_schedule_timer(s, true);
+        timer_del(s->dgt_timer);
         break;
     case QSD8X50_TIMER_PROTECTION:
         s->csr_regs[index] = value;
