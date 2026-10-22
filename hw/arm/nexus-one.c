@@ -341,7 +341,6 @@ static void nexus_one_csr_write(void *opaque, hwaddr offset, uint64_t value,
 {
     NexusOneMachineState *s = opaque;
     uint32_t index = offset >> 2;
-    uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     if (size != 4 || (offset & 3) || offset >= QSD8X50_IO_SIZE) {
         return;
@@ -415,9 +414,8 @@ static uint64_t nexus_one_uart_read(void *opaque, hwaddr offset,
         /* SR is read at the CSR offset; CSR is write-only. */
         return MSM_UART_SR_TX_READY | MSM_UART_SR_TX_EMPTY;
     case MSM_UART_IMR:
+        /* IMR and ISR alias in this minimal polling-only model. */
         return s->uart_imr;
-    case MSM_UART_ISR:
-        return s->uart_isr;
     default:
         return 0;
     }
@@ -447,10 +445,6 @@ static void nexus_one_uart_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case MSM_UART_IMR:
         s->uart_imr = value;
-        break;
-    case MSM_UART_ISR:
-        /* Interrupt status bits are write-one-to-clear. */
-        s->uart_isr &= ~value;
         break;
     case MSM_UART_TF:
         {
