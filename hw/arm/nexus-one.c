@@ -115,10 +115,10 @@ static void nexus_one_vic_update(NexusOneMachineState *s)
                    s->vic_enable[1] & s->vic_select[1];
 
     if (s->cpu_irq) {
-        qemu_irq_set(s->cpu_irq, (s->vic_master & 1) && irq_pending);
+        qemu_set_irq(s->cpu_irq, (s->vic_master & 1) && !!irq_pending);
     }
     if (s->cpu_fiq) {
-        qemu_irq_set(s->cpu_fiq, (s->vic_master & 2) && fiq_pending);
+        qemu_set_irq(s->cpu_fiq, (s->vic_master & 2) && !!fiq_pending);
     }
 }
 
@@ -172,12 +172,16 @@ static uint64_t nexus_one_vic_read(void *opaque, hwaddr offset,
     case 0xc0: return s->vic_softint[0];
     case 0xc4: return s->vic_softint[1];
     case 0xd0: {
-        uint32_t pending = ((s->vic_pending[0] | s->vic_softint[0]) &
-                            s->vic_enable[0] & ~s->vic_select[0]) |
-                           (((s->vic_pending[1] | s->vic_softint[1]) &
-                             s->vic_enable[1] & ~s->vic_select[1]) << 0);
-        if (pending) {
-            return __builtin_ctz(pending);
+        uint32_t pending0 = (s->vic_pending[0] | s->vic_softint[0]) &
+                            s->vic_enable[0] & ~s->vic_select[0];
+        uint32_t pending1 = (s->vic_pending[1] | s->vic_softint[1]) &
+                            s->vic_enable[1] & ~s->vic_select[1];
+
+        if (pending0) {
+            return __builtin_ctz(pending0);
+        }
+        if (pending1) {
+            return 32 + __builtin_ctz(pending1);
         }
         return 0xffffffffU;
     }
